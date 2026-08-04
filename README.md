@@ -34,4 +34,4 @@ about who pays.
 - `account.go` — `Account`, `Org`/`Person`/`Project`, `Parse`, `Payer`, `Credential`
 - `org.go` — org-level helpers
 
-MIT.
+Licensed under **MIT OR Apache-2.0**, per [HIP-0137](https://github.com/hanzoai/hips/blob/main/HIPs/hip-0137-one-license.md).
