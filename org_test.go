@@ -4,6 +4,7 @@ package account
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -25,6 +26,7 @@ func TestEffectiveOrg(t *testing.T) {
 		orgs      []OrgRef
 		requested string
 		want      string
+		wantErr   bool
 	}{
 		// --- the feature: a member selects a team and gets it ---
 		{
@@ -71,28 +73,32 @@ func TestEffectiveOrg(t *testing.T) {
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "initech",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "empty claim set admits nothing (legacy token, opaque key, machine)",
 			owner:     "hanzo",
 			orgs:      nil,
 			requested: "acme",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "empty non-nil claim set admits nothing",
 			owner:     "hanzo",
 			orgs:      []OrgRef{},
 			requested: "acme",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "a claim set naming only home cannot reach a team",
 			owner:     "hanzo",
 			orgs:      []OrgRef{{Org: "hanzo", Role: "owner"}},
 			requested: "acme",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 
 		// --- verbatim comparison: no fold, no trim, no normalization ---
@@ -104,112 +110,128 @@ func TestEffectiveOrg(t *testing.T) {
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "ACME",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "title case is a different org",
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "Acme",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "mixed case is a different org",
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "aCmE",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "an interior space is a different org",
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "ac me",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "a leading space is a different org",
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: " acme",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "a trailing space is a different org",
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "acme ",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "surrounding whitespace is a different org",
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "\tacme\n",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "a zero-width space is a different org",
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "acme\u200b",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "an interior zero-width joiner is a different org",
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "ac\u200dme",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "a zero-width no-break space is a different org",
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "\ufeffacme",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "a NUL byte is a different org",
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "acme\x00",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "a Cyrillic homoglyph is a different org",
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "\u0430cme", // Cyrillic а, not Latin a
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "a prefix of a granted org is a different org",
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "acm",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "a superstring of a granted org is a different org",
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "acmex",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "a path-shaped ask is a different org",
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "acme/admin",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "whitespace alone is a different org",
 			owner:     "hanzo",
 			orgs:      alice,
 			requested: "   ",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 
 		// --- the home org itself is compared verbatim too ---
@@ -221,7 +243,8 @@ func TestEffectiveOrg(t *testing.T) {
 			owner:     "hanzo",
 			orgs:      nil,
 			requested: "HANZO",
-			want:      "hanzo",
+			want:      "",
+			wantErr:   true,
 		},
 		{
 			// Two orgs differing only in case are DISTINCT, and both may be
@@ -247,6 +270,7 @@ func TestEffectiveOrg(t *testing.T) {
 			orgs:      alice,
 			requested: "acme",
 			want:      "",
+			wantErr:   true,
 		},
 		{
 			name:      "no owner and no ask resolves nothing",
@@ -275,7 +299,21 @@ func TestEffectiveOrg(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := EffectiveOrg(tc.owner, tc.orgs, tc.requested); got != tc.want {
+			got, err := EffectiveOrg(tc.owner, tc.orgs, tc.requested)
+			if tc.wantErr {
+				if !errors.Is(err, ErrOrgForbidden) {
+					t.Fatalf("EffectiveOrg(%q, %v, %q) = (%q, %v), want ErrOrgForbidden — an explicit ask must refuse, never redirect the bill",
+						tc.owner, tc.orgs, tc.requested, got, err)
+				}
+				if got != "" {
+					t.Fatalf("EffectiveOrg returned org %q alongside a refusal; a refused selection must name no payer", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("EffectiveOrg(%q, %v, %q) errored: %v", tc.owner, tc.orgs, tc.requested, err)
+			}
+			if got != tc.want {
 				t.Fatalf("EffectiveOrg(%q, %v, %q) = %q, want %q",
 					tc.owner, tc.orgs, tc.requested, got, tc.want)
 			}
@@ -292,7 +330,10 @@ func TestEffectiveOrg_ReturnsTheSignedSlug(t *testing.T) {
 	asks := []string{"", "acme", "ACME", "initech", " acme", "acme\u200b", "\x00", "hanzo"}
 
 	for _, ask := range asks {
-		got := EffectiveOrg("hanzo", alice, ask)
+		got, err := EffectiveOrg("hanzo", alice, ask)
+		if err != nil {
+			continue // a refused ask names no org, so there is no slug to check
+		}
 
 		signed := got == "hanzo"
 		for _, o := range alice {
@@ -426,7 +467,10 @@ func TestNoSwitchIsANoOp(t *testing.T) {
 	for _, cred := range creds {
 		for _, set := range sets {
 			for _, ask := range asks {
-				eff := EffectiveOrg(cred.Owner, set, ask)
+				eff, effErr := EffectiveOrg(cred.Owner, set, ask)
+				if effErr != nil {
+					continue // a refused ask selects no payer; there is nothing to compare
+				}
 				ledger := LedgerOrg(eff, cred.Owner, false)
 
 				// The credential as the new pipeline would build it, versus the
@@ -459,7 +503,10 @@ func TestSwitchMovesTheLedger(t *testing.T) {
 	}
 
 	// She selects acme, a team she is granted. The team pool pays.
-	eff := EffectiveOrg("hanzo", alice, "acme")
+	eff, err := EffectiveOrg("hanzo", alice, "acme")
+	if err != nil {
+		t.Fatalf("a granted team was refused: %v", err)
+	}
 	ledger := LedgerOrg(eff, "hanzo", false)
 	switched := Payer(Credential{Owner: ledger, Name: "alice"})
 
@@ -503,9 +550,12 @@ func TestEffectiveOrg_IsPure(t *testing.T) {
 	orgs := []OrgRef{{Org: "hanzo", Role: "member"}, {Org: "acme", Role: "admin"}}
 	before := append([]OrgRef(nil), orgs...)
 
-	first := EffectiveOrg("hanzo", orgs, "acme")
+	first, firstErr := EffectiveOrg("hanzo", orgs, "acme")
+	if firstErr != nil {
+		t.Fatalf("a granted org was refused: %v", firstErr)
+	}
 	for i := 0; i < 100; i++ {
-		if got := EffectiveOrg("hanzo", orgs, "acme"); got != first {
+		if got, _ := EffectiveOrg("hanzo", orgs, "acme"); got != first {
 			t.Fatalf("call %d returned %q, first returned %q — not a function of its arguments", i, got, first)
 		}
 	}
@@ -547,8 +597,8 @@ func TestOrgRef_DecodesTheIAMWire(t *testing.T) {
 	}
 
 	// The decoded set must drive the gate — the whole reason the shape matters.
-	if got := EffectiveOrg("hanzo", orgs, "acme"); got != "acme" {
-		t.Fatalf("a decoded membership did not authorize its own org: got %q", got)
+	if got, err := EffectiveOrg("hanzo", orgs, "acme"); err != nil || got != "acme" {
+		t.Fatalf("a decoded membership did not authorize its own org: got %q err %v", got, err)
 	}
 
 	// Role is optional on the wire; a set that omits it still authorizes.
@@ -556,7 +606,84 @@ func TestOrgRef_DecodesTheIAMWire(t *testing.T) {
 	if err := json.Unmarshal([]byte(`[{"org":"acme"}]`), &terse); err != nil {
 		t.Fatalf("decoding a role-less membership failed: %v", err)
 	}
-	if got := EffectiveOrg("hanzo", terse, "acme"); got != "acme" {
-		t.Fatalf("a role-less membership did not authorize: got %q", got)
+	if got, err := EffectiveOrg("hanzo", terse, "acme"); err != nil || got != "acme" {
+		t.Fatalf("a role-less membership did not authorize: got %q err %v", got, err)
+	}
+}
+
+// ── The billing-selection contract, stated one case per test ────────────────
+//
+// The table above covers the predicate exhaustively. These five say the CONTRACT
+// out loud, because the property that matters is not "which string comes back"
+// but "an explicit ask either succeeds or refuses, and never quietly bills
+// somebody else". Named individually so a failure names the rule it broke.
+
+func TestEffectiveOrg_NoSelectionUsesHome(t *testing.T) {
+	got, err := EffectiveOrg("hanzo", alice, "")
+	if err != nil {
+		t.Fatalf("no selection errored: %v — a caller who never touches the switcher must be unaffected", err)
+	}
+	if got != "hanzo" {
+		t.Fatalf("no selection = %q, want home org %q", got, "hanzo")
+	}
+}
+
+func TestEffectiveOrg_HomeExplicitlySelected(t *testing.T) {
+	got, err := EffectiveOrg("hanzo", alice, "hanzo")
+	if err != nil {
+		t.Fatalf("selecting home errored: %v", err)
+	}
+	if got != "hanzo" {
+		t.Fatalf("selecting home = %q, want %q", got, "hanzo")
+	}
+}
+
+func TestEffectiveOrg_MemberOrgSelected(t *testing.T) {
+	got, err := EffectiveOrg("hanzo", alice, "acme")
+	if err != nil {
+		t.Fatalf("a granted org was refused: %v — this is the switcher's whole feature", err)
+	}
+	if got != "acme" {
+		t.Fatalf("selecting a granted org = %q, want %q", got, "acme")
+	}
+}
+
+// The case this function was rewritten for. Returning home here SUCCEEDS against
+// a different economic principal: the model runs, the meter records, the ledger
+// writes, and the wrong account pays with no error anywhere.
+func TestEffectiveOrg_UnauthorizedOrgRefused(t *testing.T) {
+	got, err := EffectiveOrg("hanzo", alice, "initech")
+	if !errors.Is(err, ErrOrgForbidden) {
+		t.Fatalf("unauthorized org = (%q, %v), want ErrOrgForbidden", got, err)
+	}
+	if got != "" {
+		t.Fatalf("a refusal named payer %q; a refused selection must name none", got)
+	}
+}
+
+// Indistinguishable from unauthorized, deliberately: a caller must not be able to
+// learn which orgs exist by varying the ask.
+func TestEffectiveOrg_NonexistentOrgRefused(t *testing.T) {
+	got, err := EffectiveOrg("hanzo", alice, "no-such-org-anywhere")
+	if !errors.Is(err, ErrOrgForbidden) {
+		t.Fatalf("nonexistent org = (%q, %v), want ErrOrgForbidden", got, err)
+	}
+	if got != "" {
+		t.Fatalf("a refusal named payer %q", got)
+	}
+
+	_, unauthorized := EffectiveOrg("hanzo", alice, "initech")
+	if unauthorized.Error() != err.Error() {
+		t.Fatalf("nonexistent and unauthorized give different errors (%v vs %v) — the ask becomes an org-existence oracle",
+			err, unauthorized)
+	}
+}
+
+// A refusal must not be recoverable into a payer by a caller that ignores the
+// error: the zero value names nobody, so an ignored error cannot charge anyone.
+func TestEffectiveOrg_RefusalNamesNoPayerEvenIfErrorIgnored(t *testing.T) {
+	eff, _ := EffectiveOrg("hanzo", alice, "initech")
+	if LedgerOrg(eff, "", false) != "" {
+		t.Fatalf("an ignored refusal still resolved a ledger — refusal must be unusable, not merely reported")
 	}
 }

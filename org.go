@@ -2,6 +2,8 @@
 
 package account
 
+import "errors"
+
 // This file answers the question BEFORE "who pays": which org's ledger is this
 // request spending from. Payer names the wallet; these two name the ledger the
 // wallet lives in, and together they are the whole address.
@@ -47,13 +49,22 @@ type OrgRef struct {
 // SELECTION FROM a set IAM already granted, and the value returned on a match is
 // the one from that set, so nothing a client typed can flow onward as an org.
 //
-// REFUSAL IS SILENT AND IS THE HOME ORG. A request outside the membership set,
-// an empty set (a legacy pre-claim token, an opaque key, a machine principal),
-// an empty ask, an unattributable subject — all resolve to home, which is the
-// exact behavior of every one of these layers before a switch existed. There is
-// no error return because there is no error: not switching is a valid outcome,
-// and it is the outcome for every user who never touches the switcher. That makes
-// adopting this function a provable no-op for them.
+// AN EXPLICIT ASK EITHER SUCCEEDS OR REFUSES — IT NEVER FALLS BACK. This used
+// to return home for an ask outside the membership set, and called that "fail
+// closed". It is not. This function selects the PAYER, so falling back does not
+// fail at all: it succeeds against a DIFFERENT economic principal. Everything
+// downstream then behaves correctly — the model runs, the tokens meter, the
+// ledger writes — while the wrong account is charged, and nobody sees an error
+// because there wasn't one. An obvious failure would have been safer.
+//
+// So the ask is honored, or it is ErrOrgForbidden. NO ASK is still home: a
+// caller who never touches the switcher is unchanged, which keeps adoption a
+// no-op for them. The difference is only that naming an org you cannot bill is
+// now an answer, not a silent redirection of the bill.
+//
+// UNAUTHORIZED AND NONEXISTENT ARE THE SAME REFUSAL, deliberately. Distinguishing
+// them would let a caller probe which orgs exist by varying the ask. Callers
+// surface both as 403.
 //
 // THE COMPARISON IS VERBATIM: no trim, no case-fold. "acme" and "ACME" are
 // DISTINCT orgs in IAM, so folding would let a member of one select the other,
@@ -67,17 +78,31 @@ type OrgRef struct {
 // Role is deliberately not read. Membership answers "may I act in this org at
 // all"; what a role permits inside it is a separate authority, and braiding them
 // here would put two decisions behind one call.
-func EffectiveOrg(owner string, orgs []OrgRef, requested string) string {
-	if owner == "" || requested == "" || requested == owner {
-		return owner // no subject, no ask, or already home — nothing to decide
+func EffectiveOrg(owner string, orgs []OrgRef, requested string) (string, error) {
+	if requested == "" || requested == owner {
+		return owner, nil // no ask, or already home — nothing to decide
+	}
+	// An explicit selection requires an attributable subject. An empty owner is
+	// unattributable, and answering it with ("", nil) would report success while
+	// naming no payer — the same shape as the fallback this function was fixed to
+	// remove, one level down.
+	if owner == "" {
+		return "", ErrOrgForbidden
 	}
 	for _, o := range orgs {
 		if o.Org == requested {
-			return o.Org // the SIGNED slug, never the client's string
+			return o.Org, nil // the SIGNED slug, never the client's string
 		}
 	}
-	return owner // outside the membership set — fail closed to home, silently
+	// Outside the membership set. Refuse — do not redirect the bill.
+	return "", ErrOrgForbidden
 }
+
+// ErrOrgForbidden is the refusal for an explicit org selection the subject's
+// signed membership does not cover — whether the org is one they do not belong
+// to or one that does not exist. Callers surface both as 403 so the ask cannot
+// be used to enumerate orgs.
+var ErrOrgForbidden = errors.New("account: org selection not permitted for this subject")
 
 // LedgerOrg resolves the org that PAYS. It takes the org the request acts in
 // (EffectiveOrg), the subject's home org, and whether the subject holds platform
