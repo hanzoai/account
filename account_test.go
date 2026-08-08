@@ -263,16 +263,46 @@ func TestAccount_SubjectIsFolded(t *testing.T) {
 // TestIsMachine_MatchesApplicationType locks the machine predicate to the IAM
 // User.Type contract, case-insensitively. (The predicate's TRUST is a separate,
 // documented problem — this only fixes its value.)
+//
+// BOTH spellings IAM uses are machines. "application" is the OIDC client shape;
+// "service-account" is the identity class internal/oidc/provision.go mints and
+// /v1/iam/service-accounts creates. A predicate that knows only the first reads a
+// real service account as a person.
 func TestIsMachine_MatchesApplicationType(t *testing.T) {
-	for _, s := range []string{"application", "Application", " application "} {
+	for _, s := range []string{
+		"application", "Application", " application ",
+		"service-account", "Service-Account", " service-account ",
+	} {
 		if !IsMachine(s) {
 			t.Fatalf("IsMachine(%q) = false, want true", s)
 		}
 	}
-	for _, s := range []string{"normal-user", "", "app"} {
+	for _, s := range []string{"normal-user", "", "app", "service", "serviceaccount"} {
 		if IsMachine(s) {
 			t.Fatalf("IsMachine(%q) = true, want false", s)
 		}
+	}
+}
+
+// TestPayer_ServiceAccountInSignupOrgSpendsThePool is the live defect, in one
+// assertion: hanzo/guest is the anonymous free tier, IAM typed it "service-account",
+// and it read $0 on a pool holding ~$149k because Payer took it for a person.
+//
+// The signup org is the only place this bites — its members are strangers, so a
+// person there pays personally — which is exactly where every first-party service
+// account lands. The wallet a service account was handed there ("hanzo/guest") is
+// one no funding path can name: a grant credits the pool, a deposit names a real
+// member. So the wrong answer is not a smaller balance, it is an unreachable one.
+func TestPayer_ServiceAccountInSignupOrgSpendsThePool(t *testing.T) {
+	guest := Credential{Owner: SignupOrg, Name: "guest", Machine: IsMachine("service-account")}
+	if got := Payer(guest).Subject(); got != SignupOrg {
+		t.Fatalf("service account in the signup org pays %q, want the org pool %q", got, SignupOrg)
+	}
+	// A PERSON in the same org still pays personally — the pool is not opened to
+	// strangers, which is the whole reason the signup org is special.
+	human := Credential{Owner: SignupOrg, Name: "alice", Machine: IsMachine("normal-user")}
+	if got := Payer(human).Subject(); got != SignupOrg+"/alice" {
+		t.Fatalf("person in the signup org pays %q, want personal %q", got, SignupOrg+"/alice")
 	}
 }
 

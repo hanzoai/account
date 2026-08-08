@@ -198,8 +198,8 @@ func Parse(claim string) Account {
 // the same claim for the in-cluster path.
 //
 // Machine is the LEGACY fallback signal, and it is not trustworthy: callers derive
-// it from User.Type == "application", a field IAM's UpdateUser carries in its
-// NON-admin column list — IAM's own code says "User.Type=='application' ALONE is
+// it from User.Type (see IsMachine for the two spellings IAM uses) — IAM's own
+// code says "User.Type=='application' ALONE is
 // forgeable" (iam/object/client_credentials.go), which is why IAM's auth requires
 // four correlated fields (IsClientCredentialsClaim). A signup-org member who set
 // their own Type could be billed as a machine and reach the org pool. That is
@@ -217,15 +217,31 @@ type Credential struct {
 // a person. It is the ONE place that predicate lives, so the day it becomes
 // trustworthy it changes here and nowhere else.
 //
+// IAM SPELLS A MACHINE TWO WAYS, and money has to read both. "application" is the
+// OIDC client shape (object.IsClientCredentialsClaim). "service-account" is the
+// identity class IAM's own provisioning mints — internal/oidc/provision.go writes
+// it for a tenant's pk-/sk- credential, /v1/iam/service-accounts creates rows of
+// it, and SCIM declares userType readOnly precisely because it is that
+// discriminator. Matching only the first meant every service account IAM has ever
+// provisioned INTO THE SIGNUP ORG fell to the personal branch below and addressed
+// a wallet no funding path can name: it reads $0 forever while the org's real
+// balance sits beside it. That is the same defect IAM fixed for the token path
+// (a machine credential names its payer); this is its API-key half.
+//
 // It is NOT trustworthy today — see Credential.Machine. IAM's own auth refuses to
 // trust this field alone and requires four correlated fields
 // (object.IsClientCredentialsClaim: type=="application" AND name==app.Name AND
-// provider=="" AND signinMethod==""), because "type" rides IAM's non-admin
-// UpdateUser column list and a user can set their own. Billing should resolve this
-// at the auth boundary, where those four fields exist, and pass the answer in; this
-// function is the seam that makes that a one-line change.
+// provider=="" AND signinMethod==""). Writing Type needs org-admin, SuperAdmin, or
+// an app holding CapUserAdmin, so neither spelling is reachable by a plain member;
+// adding the second widens nothing the first did not already admit. Billing should
+// resolve this at the auth boundary, where those four fields exist, and pass the
+// answer in; this function is the seam that makes that a one-line change.
 func IsMachine(userType string) bool {
-	return strings.EqualFold(strings.TrimSpace(userType), "application")
+	switch strings.ToLower(strings.TrimSpace(userType)) {
+	case "application", "service-account":
+		return true
+	}
+	return false
 }
 
 // Payer returns the Account that pays for a credential. It is the ONE function
