@@ -289,9 +289,26 @@ func Payer(c Credential) Account {
 		return Org(owner)
 	}
 	if owner == SignupOrg {
-		if name := fold(c.Name); name != "" {
-			return Person(owner, name)
+		// The signup org is the ONE org where the NAME decides, and the account
+		// sitting beside its members is the platform's own balance. A credential
+		// that arrives here without a name has not asked for the pool — it has
+		// FAILED TO NAME A PERSON, and answering it with Org(owner) hands a
+		// stranger that balance. So it is refused: unattributable is not free, and
+		// it is certainly not "the platform pays".
+		//
+		// The refusal is stated INSIDE this branch, not above it, because a blank
+		// name is also how a caller legitimately ADDRESSES an org account — a
+		// member-less admin grant crediting a tenant's pool, a bare key naming a
+		// ledger. In every other org those resolve identically to a named member
+		// (all of them pool), so the name is never read there and namelessness
+		// cannot be a defect. Refusing it estate-wide would break funding a
+		// customer's pool to close a hole that only exists where the name is
+		// load-bearing.
+		name := fold(c.Name)
+		if name == "" {
+			return Account{}
 		}
+		return Person(owner, name)
 	}
 	return Org(owner)
 }
@@ -301,16 +318,25 @@ func Payer(c Credential) Account {
 // is empty it is taken from the key's prefix. It is a parse, not a second rule:
 // it funnels into Payer, so it can never answer differently.
 func PayerOf(org, key string) Account {
-	name := ""
 	if i := strings.IndexByte(key, '/'); i >= 0 {
 		if strings.TrimSpace(org) == "" {
 			org = key[:i]
 		}
-		name = key[i+1:]
-	} else if strings.TrimSpace(org) == "" {
-		org = key
+		return Payer(Credential{Owner: org, Name: key[i+1:]})
 	}
-	return Payer(Credential{Owner: org, Name: name})
+	if strings.TrimSpace(org) == "" {
+		// A bare key with no org to qualify it NAMES AN ORG — there is no person in
+		// that string to have gone missing, so it is an address, not a credential
+		// that failed to resolve, and Payer's refusal must not swallow it.
+		return Org(key)
+	}
+	// A bare key WITH an org is that org's member: the caller already supplied the
+	// ledger, so the key is the remaining half — the name. This used to drop the
+	// key on the floor and answer with the org account, which in the signup org is
+	// the platform pool: a legacy chat/TTS turn gated "hanzo/carol" (the spend
+	// check re-qualifies a bare name exactly this way) and then debited "hanzo".
+	// One request, two addresses, and the difference was billed to the platform.
+	return Payer(Credential{Owner: org, Name: key})
 }
 
 // fold normalizes an identity component to its canonical, comparable form.
