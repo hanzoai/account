@@ -229,12 +229,17 @@ func TestPayerOf_FunnelsToPayer(t *testing.T) {
 		{"", "hanzo/alice", "hanzo/alice"},      // org derived from key prefix
 		{"acme", "acme/bob", "acme"},            // real org pools regardless of key
 		{"", "acme/bob", "acme"},                // derived org, still pools
-		// A slash-less key is a bare owner, not a name: with an explicit org it
-		// carries no name half, so it resolves to that org's pool. This is the
-		// exact preserved contract of the deleted BillingSubjectFromUserKey — the
-		// key form is "<org>/<name>" or a bare org, never a bare name.
-		{"hanzo", "alice", "hanzo"}, // bare key + explicit org → org pool (name dropped)
-		{"", "hanzo", "hanzo"},      // bare org, no name → org pool
+		// A slash-less key with an EXPLICIT org is that org's member: the caller
+		// already supplied the ledger, so the key is the name half. It used to be
+		// discarded and answer with the org account — in the signup org, the
+		// platform pool — while the spend gate re-qualified the same bare name to
+		// the person. Gate and debit now address one wallet.
+		{"hanzo", "alice", "hanzo/alice"}, // bare key + explicit org → that member
+		{"acme", "bob", "acme"},           // …and a pooled org still pools
+		// With no org to qualify it, a bare key names the org itself — an address,
+		// not a credential that lost its person.
+		{"", "hanzo", "hanzo"}, // bare org, no name → org account
+		{"", "acme", "acme"},
 	}
 	for _, tc := range cases {
 		if got := PayerOf(tc.org, tc.key).Subject(); got != tc.want {
@@ -312,5 +317,127 @@ func TestPayer_ServiceAccountInSignupOrgSpendsThePool(t *testing.T) {
 func TestSignupOrg_MatchesIAM(t *testing.T) {
 	if SignupOrg != "hanzo" {
 		t.Fatalf("SignupOrg = %q; must equal IAM object.DefaultOrganization (\"hanzo\")", SignupOrg)
+	}
+}
+
+// TestPayer_NamelessCredentialNeverReachesThePool is the regression for a
+// self-serve, durable path onto the platform's own balance.
+//
+// THE CHAIN. IAM's userClaims resolves a token row's "<owner>/<name>" key to an
+// Identity. When that row does not resolve it returned the subject and NOTHING
+// else — no name, no type, no billing_account — while the signer still stamped
+// `owner` from the application's organization, which for the console app is the
+// signup org. A refresh token freezes its User string at establishment and the
+// rotation copies it forward verbatim, so re-keying the identity underneath it
+// (self-serve: onboarding a personal org rewrites user.Owner, and lookups are by
+// (owner, name)) makes every later rotation mint one of these. Deleting a user,
+// or a transient lookup error, produced the same credential.
+//
+// Payer then read it as "no name ⇒ not a person" and answered with the org
+// account. In the signup org that account is the platform pool, so a stranger's
+// credential spent the platform's money, and each rotation renewed the channel.
+//
+// The assertion is NEGATIVE on purpose: the subject must be EMPTY — refused —
+// not merely "different from the pool". A test that only checked `!= "hanzo"`
+// would have passed just as happily on a subject of "hanzo/" or "", and passing
+// either way is the failure mode this whole file exists to prevent.
+func TestPayer_NamelessCredentialNeverReachesThePool(t *testing.T) {
+	// Exactly what iam/internal/oidc.userClaims emits for an unresolvable row,
+	// carried into ai: owner from the signed `owner` claim, everything else absent.
+	nameless := Credential{Owner: SignupOrg, Name: "", Account: "", Machine: false}
+
+	got := Payer(nameless)
+	if !got.Zero() {
+		t.Fatalf("Payer(nameless) = %+v, want the zero Account (unattributable)", got)
+	}
+	if s := got.Subject(); s != "" {
+		t.Fatalf("Payer(nameless).Subject() = %q, want %q — a credential that names "+
+			"nobody must not address the platform pool", s, "")
+	}
+	// State the money consequence outright, so a future edit that reintroduces the
+	// fallback fails on the thing that actually cost us rather than on a shape.
+	if s := Payer(nameless).Subject(); s == SignupOrg {
+		t.Fatalf("REGRESSION: a nameless credential resolved to the platform pool %q", s)
+	}
+
+	// The same credential shaped as a key, through the other entry point.
+	if s := PayerOf(SignupOrg, "").Subject(); s != "" {
+		t.Fatalf("PayerOf(%q, \"\").Subject() = %q, want empty", SignupOrg, s)
+	}
+
+	// Whitespace is not a name — fold() must not let " " stand in for one.
+	if s := Payer(Credential{Owner: SignupOrg, Name: "   "}).Subject(); s != "" {
+		t.Fatalf("Payer(blank name).Subject() = %q, want empty", s)
+	}
+}
+
+// TestPayer_RefusalSparesEveryLegitimateCaller pins the four populations the
+// refusal above must NOT touch. Over-refusing here 402s a paying customer or a
+// first-party service, which is a worse outage than the hole it closes — so each
+// is asserted explicitly rather than assumed.
+func TestPayer_RefusalSparesEveryLegitimateCaller(t *testing.T) {
+	// 1. A MACHINE. Every client_credentials token IAM has ever minted carries
+	// `name: app.Name` AND a signed billing_account, so it is doubly clear of the
+	// refusal — the claim answers before the fallback is reached, and the name is
+	// non-empty if it ever is. Both spellings of the legacy type still pool.
+	for _, m := range []Credential{
+		{Owner: SignupOrg, Name: "hanzo-cloud", Account: "org:hanzo"}, // as minted today
+		{Owner: SignupOrg, Name: "hanzo-cloud", Machine: true},        // pre-claim token
+		{Owner: SignupOrg, Name: "", Machine: true},                   // pre-claim, no name
+		{Owner: SignupOrg, Name: "hanzo-insights", Machine: IsMachine("service-account")},
+	} {
+		if got := Payer(m).Subject(); got != SignupOrg {
+			t.Fatalf("machine %+v resolved to %q, want the org pool %q", m, got, SignupOrg)
+		}
+	}
+
+	// 2. A FUNDED CUSTOMER in their own tenant org — the population an
+	// over-broad refusal would have 402'd. A pooled org answers the same for a
+	// named member, a nameless credential and a member-less grant alike, so the
+	// name is never load-bearing there and must never be required.
+	for _, c := range []Credential{
+		{Owner: "maxpower", Name: "davelorenzini"},
+		{Owner: "maxpower", Name: ""}, // member-less: addresses the pool
+		{Owner: "maxpower", Name: "davelorenzini", Account: "org:maxpower"},
+	} {
+		if got := Payer(c).Subject(); got != "maxpower" {
+			t.Fatalf("tenant credential %+v resolved to %q, want %q", c, got, "maxpower")
+		}
+	}
+
+	// 3. A NORMAL SIGNUP PERSON still gets their own wallet — the whole reason the
+	// signup org reads the name at all.
+	if got := Payer(Credential{Owner: SignupOrg, Name: "alice"}).Subject(); got != "hanzo/alice" {
+		t.Fatalf("signup person resolved to %q, want %q", got, "hanzo/alice")
+	}
+
+	// 4. AN ORG ADDRESS is not a credential that lost its person. A bare key with
+	// no org to qualify it still names the org — this is what an admin grant
+	// crediting a pool and the per-org ledger selector both hold.
+	if got := PayerOf("", SignupOrg).Subject(); got != SignupOrg {
+		t.Fatalf("bare org key resolved to %q, want %q", got, SignupOrg)
+	}
+	if got := PayerOf("", "maxpower").Subject(); got != "maxpower" {
+		t.Fatalf("bare tenant key resolved to %q, want %q", got, "maxpower")
+	}
+}
+
+// TestPayerOf_BareNameIsTheMemberNotThePool: the legacy chat/TTS/STT usage
+// records hold the caller as a BARE username with the org passed alongside. The
+// spend gate re-qualifies that to "<org>/<name>" before checking the balance;
+// this dropped it and billed the org account. In the signup org that meant every
+// legacy turn was gated against the person's wallet and then charged to the
+// platform pool — one request, two addresses.
+func TestPayerOf_BareNameIsTheMemberNotThePool(t *testing.T) {
+	if got := PayerOf(SignupOrg, "carol").Subject(); got != "hanzo/carol" {
+		t.Fatalf("PayerOf(%q, %q).Subject() = %q, want %q — the debit must address "+
+			"the wallet the gate checked", SignupOrg, "carol", got, "hanzo/carol")
+	}
+	if got := PayerOf(SignupOrg, "carol").Subject(); got == SignupOrg {
+		t.Fatalf("REGRESSION: a legacy usage record billed the platform pool %q", got)
+	}
+	// A pooled tenant org is unaffected: named or not, it answers with the pool.
+	if got := PayerOf("maxpower", "dave").Subject(); got != "maxpower" {
+		t.Fatalf("PayerOf(maxpower, dave).Subject() = %q, want %q", got, "maxpower")
 	}
 }
