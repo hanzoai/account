@@ -197,20 +197,21 @@ func Parse(claim string) Account {
 // (gateway/iamauth), and cloud's own identity boundary mints the same header from
 // the same claim for the in-cluster path.
 //
-// Machine is the LEGACY fallback signal, and it is not trustworthy: callers derive
-// it from User.Type (see IsMachine for the two spellings IAM uses) — IAM's own
-// code says "User.Type=='application' ALONE is
-// forgeable" (iam/object/client_credentials.go), which is why IAM's auth requires
-// four correlated fields (IsClientCredentialsClaim). A signup-org member who set
-// their own Type could be billed as a machine and reach the org pool. That is
-// exactly what the Account claim removes: IAM now resolves machine-ness from the
-// client_credentials GRANT SHAPE and states the answer in the claim, so Machine
-// only ever decides a token minted BEFORE the claim shipped.
+// THERE IS NO MACHINE FIELD, deliberately. One used to sit here, derived by each
+// caller from User.Type, and it was the last input to this function that a ROW
+// could assert. It decided nothing outside the signup org — machine and person
+// both pool everywhere else — so its only effect was to hand a machine-typed row
+// the signup org's account, which is the platform's own balance. That made "is a
+// program", a profile fact, into "may spend the platform's money", an authority.
+//
+// Machine-ness still exists and is still asked (IsMachine), for the questions it
+// actually answers: which column a usage record fills, whether a credential has a
+// person behind it. It does not answer who pays. IAM resolves that at the identity
+// boundary, where the grant shape is visible, and states it in Account.
 type Credential struct {
 	Owner   string
 	Name    string
 	Account string
-	Machine bool
 }
 
 // IsMachine reports whether an IAM User.Type names a service credential rather than
@@ -228,14 +229,14 @@ type Credential struct {
 // balance sits beside it. That is the same defect IAM fixed for the token path
 // (a machine credential names its payer); this is its API-key half.
 //
-// It is NOT trustworthy today — see Credential.Machine. IAM's own auth refuses to
-// trust this field alone and requires four correlated fields
+// IT DOES NOT DECIDE WHO PAYS, and it is not an input to Payer. User.Type is a
+// row column; IAM's own auth refuses to trust it alone and requires four
+// correlated fields to call a credential a machine
 // (object.IsClientCredentialsClaim: type=="application" AND name==app.Name AND
-// provider=="" AND signinMethod==""). Writing Type needs org-admin, SuperAdmin, or
-// an app holding CapUserAdmin, so neither spelling is reachable by a plain member;
-// adding the second widens nothing the first did not already admit. Billing should
-// resolve this at the auth boundary, where those four fields exist, and pass the
-// answer in; this function is the seam that makes that a one-line change.
+// provider=="" AND signinMethod==""). So this answers the questions a column can
+// answer — which column a usage record fills, whether there is a person behind the
+// credential — and the money question is answered at the identity boundary, where
+// those four fields exist, and carried in the signed billing_account claim.
 func IsMachine(userType string) bool {
 	switch strings.ToLower(strings.TrimSpace(userType)) {
 	case "application", "service-account":
@@ -270,6 +271,12 @@ func IsMachine(userType string) bool {
 // forging. When the last pre-claim token has expired, the fallback (and SignupOrg
 // with it) deletes, and the rule is one line: the account the credential names.
 //
+// The fallback RESOLVES; it does not GRANT. It reads only the two fields the
+// gateway mints from a verified token — the owner and the name — and never a class
+// the credential asserts about itself. That distinction is the whole reason the
+// machine flag is gone: it let the doorway for old tokens hand out the one account
+// that is not a tenant's.
+//
 // The claim is only honored WITHIN the caller's own org — a claim naming another
 // tenant's ledger is discarded, not billed. IAM never mints one (the claim and
 // `owner` come from the same signed token), so this can only fire on a mis-wired
@@ -285,9 +292,6 @@ func Payer(c Credential) Account {
 	}
 	// Legacy fallback: a pre-claim token named nobody. Resolve who pays from the
 	// credential's shape, exactly as before the claim existed.
-	if c.Machine {
-		return Org(owner)
-	}
 	if owner == SignupOrg {
 		// The signup org is the ONE org where the NAME decides, and the account
 		// sitting beside its members is the platform's own balance. A credential
@@ -295,6 +299,16 @@ func Payer(c Credential) Account {
 		// FAILED TO NAME A PERSON, and answering it with Org(owner) hands a
 		// stranger that balance. So it is refused: unattributable is not free, and
 		// it is certainly not "the platform pays".
+		//
+		// THE NAME DECIDES FOR EVERY CREDENTIAL HERE, program or person. A machine
+		// flag used to be read one step above this branch, so a machine-typed
+		// credential took the pool without ever reaching the rule that governs this
+		// org. That is backwards: the fallback exists to answer for credentials
+		// that carry no claim, and a credential carrying no claim carries no
+		// evidence of authority either. It must not GRANT what the claim would have
+		// had to state. Outside this org the flag decided nothing — every principal
+		// pools — so removing it narrows exactly one thing: an asserted class can no
+		// longer reach the platform's balance through the door meant for old tokens.
 		//
 		// The refusal is stated INSIDE this branch, not above it, because a blank
 		// name is also how a caller legitimately ADDRESSES an org account — a

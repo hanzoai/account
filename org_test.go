@@ -442,7 +442,7 @@ func TestNoSwitchIsANoOp(t *testing.T) {
 	creds := []Credential{
 		{Owner: "hanzo", Name: "alice"},                               // person in the signup org
 		{Owner: "acme", Name: "bob"},                                  // person in a real org
-		{Owner: "hanzo", Name: "hanzo-cloud", Machine: true},          // machine credential
+		{Owner: "hanzo", Name: "hanzo-cloud", Account: "org:hanzo"},   // machine credential
 		{Owner: "globex", Name: "carol", Account: "org:globex"},       // claim names the org
 		{Owner: "hanzo", Name: "dave", Account: "person:hanzo/dave"},  // claim names the person
 		{Owner: "acme", Name: "eve", Account: "project:acme/website"}, // claim names a project
@@ -475,7 +475,7 @@ func TestNoSwitchIsANoOp(t *testing.T) {
 
 				// The credential as the new pipeline would build it, versus the
 				// credential the old code built straight from the owner claim.
-				now := Payer(Credential{Owner: ledger, Name: cred.Name, Account: cred.Account, Machine: cred.Machine})
+				now := Payer(Credential{Owner: ledger, Name: cred.Name, Account: cred.Account})
 				before := Payer(cred)
 
 				if now.Subject() != before.Subject() {
