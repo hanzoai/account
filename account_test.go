@@ -36,10 +36,20 @@ func TestPayer_GrantAndGateAgree(t *testing.T) {
 		},
 		{
 			// A service credential IS the org — it never bills a per-app wallet that
-			// no one funds (the "hanzo/hanzo-cloud" 402 the carve-out closes).
-			name: "machine credential bills to its org",
-			cred: Credential{Owner: "hanzo", Name: "hanzo-cloud", Machine: true},
+			// no one funds (the "hanzo/hanzo-cloud" 402 the carve-out closes). It
+			// says so in the SIGNED claim: in the signup org an org account is the
+			// platform's balance, so naming it is a statement IAM makes at the
+			// identity boundary, never one inferred from a row's class here.
+			name: "machine credential bills to its org, over the claim",
+			cred: Credential{Owner: "hanzo", Name: "hanzo-cloud", Account: "org:hanzo"},
 			want: "hanzo",
+		},
+		{
+			// …and in a real tenant it needs no claim, because every principal
+			// there pools regardless of class.
+			name: "machine credential in a tenant org pools without a claim",
+			cred: Credential{Owner: "acme", Name: "acme-bot"},
+			want: "acme",
 		},
 		{
 			// A member of a real org, even named identically to a signup person,
@@ -84,10 +94,11 @@ func TestPayer_ClaimWins(t *testing.T) {
 	if got := Payer(Credential{Owner: "hanzo", Name: "alice", Account: "org:hanzo"}).Subject(); got != "hanzo" {
 		t.Fatalf("claimed org subject = %q, want %q (claim must beat the personal inference)", got, "hanzo")
 	}
-	// The claim also disarms the FORGEABLE machine signal: Machine says "pool me",
-	// the signed claim says "you are a person". The signature wins.
-	if got := Payer(Credential{Owner: "hanzo", Name: "alice", Account: "person:hanzo/alice", Machine: true}).Subject(); got != "hanzo/alice" {
-		t.Fatalf("claimed subject with forged Machine = %q, want %q (signed claim must beat User.Type)", got, "hanzo/alice")
+	// A signed claim naming the PERSON holds in the signup org too — there is no
+	// longer any second signal that could override it, because the class a row
+	// asserts is no longer an input at all.
+	if got := Payer(Credential{Owner: "hanzo", Name: "alice", Account: "person:hanzo/alice"}).Subject(); got != "hanzo/alice" {
+		t.Fatalf("claimed person subject = %q, want %q", got, "hanzo/alice")
 	}
 }
 
@@ -205,7 +216,7 @@ func TestPayer_FailsClosed(t *testing.T) {
 	for _, c := range []Credential{
 		{Owner: "", Name: "alice"},
 		{Owner: "   ", Name: "alice"},
-		{Owner: "", Name: "", Machine: true},
+		{Owner: "", Name: ""},
 		{Owner: "", Account: "org:acme"}, // a claim cannot supply a missing owner
 	} {
 		a := Payer(c)
@@ -289,25 +300,60 @@ func TestIsMachine_MatchesApplicationType(t *testing.T) {
 	}
 }
 
-// TestPayer_ServiceAccountInSignupOrgSpendsThePool is the live defect, in one
-// assertion: hanzo/guest is the anonymous free tier, IAM typed it "service-account",
-// and it read $0 on a pool holding ~$149k because Payer took it for a person.
+// TestPayer_AnAssertedClassNeverReachesThePool is the regression for the last
+// input to this function that a ROW could assert.
 //
-// The signup org is the only place this bites — its members are strangers, so a
-// person there pays personally — which is exactly where every first-party service
-// account lands. The wallet a service account was handed there ("hanzo/guest") is
-// one no funding path can name: a grant credits the pool, a deposit names a real
-// member. So the wrong answer is not a smaller balance, it is an unreachable one.
-func TestPayer_ServiceAccountInSignupOrgSpendsThePool(t *testing.T) {
-	guest := Credential{Owner: SignupOrg, Name: "guest", Machine: IsMachine("service-account")}
-	if got := Payer(guest).Subject(); got != SignupOrg {
-		t.Fatalf("service account in the signup org pays %q, want the org pool %q", got, SignupOrg)
+// A machine flag used to be read one step ABOVE the signup-org rule, so a
+// machine-typed credential took Org(SignupOrg) — the platform's own balance —
+// without ever reaching the rule that governs that org. The flag was derived by
+// each caller from User.Type, a profile column: "is a program" was a fact about a
+// row, and it was being spent as "may spend the platform's money".
+//
+// The fallback answers for credentials that carry NO claim, and a credential
+// carrying no claim carries no evidence of authority either. So here the NAME
+// decides, for a program exactly as for a person. Being a machine is not a grant.
+func TestPayer_AnAssertedClassNeverReachesThePool(t *testing.T) {
+	// The shape the defect needs: the signup org, a machine class, nothing signed.
+	for _, name := range []string{"guest", "svc", "bot"} {
+		c := Credential{Owner: SignupOrg, Name: name}
+		if got := Payer(c).Subject(); got != SignupOrg+"/"+name {
+			t.Fatalf("%q in the signup org pays %q, want personal %q — the pool is not reachable by shape",
+				name, got, SignupOrg+"/"+name)
+		}
+		if Payer(c) == Org(SignupOrg) {
+			t.Fatalf("%q reached the platform pool through the fallback", name)
+		}
 	}
-	// A PERSON in the same org still pays personally — the pool is not opened to
-	// strangers, which is the whole reason the signup org is special.
-	human := Credential{Owner: SignupOrg, Name: "alice", Machine: IsMachine("normal-user")}
-	if got := Payer(human).Subject(); got != SignupOrg+"/alice" {
+	// A PERSON in the same org is unchanged — the free-rider hole stays shut.
+	if got := Payer(Credential{Owner: SignupOrg, Name: "alice"}).Subject(); got != SignupOrg+"/alice" {
 		t.Fatalf("person in the signup org pays %q, want personal %q", got, SignupOrg+"/alice")
+	}
+	// A REAL TENANT is unchanged: every principal there pools, which is why the
+	// removed flag decided nothing outside the signup org.
+	if got := Payer(Credential{Owner: "acme", Name: "bot"}).Subject(); got != "acme" {
+		t.Fatalf("a machine in a tenant org pays %q, want the tenant pool %q", got, "acme")
+	}
+	// And the SIGNED claim still decides, above the shape — this narrows the
+	// fallback only. IAM states the payer at the identity boundary; that is the
+	// one path by which a first-party service credential names an org account.
+	claimed := Credential{Owner: SignupOrg, Name: "guest", Account: Org(SignupOrg).String()}
+	if got := Payer(claimed); got != Org(SignupOrg) {
+		t.Fatalf("a signed org claim was dropped: %q", got.Subject())
+	}
+}
+
+// A CREDENTIAL FROM ANOTHER TENANT NEVER NAMES THE POOL, however it is shaped.
+// The claim is honored only within the caller's own org, so a foreign claim on a
+// signup-org credential falls back to the shape rule rather than crossing tenants.
+func TestPayer_ForeignClaimNeverCrossesIntoThePool(t *testing.T) {
+	// An acme credential claiming the platform's balance is refused the claim and
+	// resolves to its own tenant.
+	if got := Payer(Credential{Owner: "acme", Name: "bob", Account: Org(SignupOrg).String()}); got != Org("acme") {
+		t.Fatalf("a foreign claim was honored: %q", got.Subject())
+	}
+	// …and a signup-org member claiming a tenant's pool is refused likewise.
+	if got := Payer(Credential{Owner: SignupOrg, Name: "mallory", Account: Org("acme").String()}); got != Person(SignupOrg, "mallory") {
+		t.Fatalf("a foreign claim was honored: %q", got.Subject())
 	}
 }
 
@@ -344,7 +390,7 @@ func TestSignupOrg_MatchesIAM(t *testing.T) {
 func TestPayer_NamelessCredentialNeverReachesThePool(t *testing.T) {
 	// Exactly what iam/internal/oidc.userClaims emits for an unresolvable row,
 	// carried into ai: owner from the signed `owner` claim, everything else absent.
-	nameless := Credential{Owner: SignupOrg, Name: "", Account: "", Machine: false}
+	nameless := Credential{Owner: SignupOrg, Name: "", Account: ""}
 
 	got := Payer(nameless)
 	if !got.Zero() {
@@ -376,15 +422,16 @@ func TestPayer_NamelessCredentialNeverReachesThePool(t *testing.T) {
 // first-party service, which is a worse outage than the hole it closes — so each
 // is asserted explicitly rather than assumed.
 func TestPayer_RefusalSparesEveryLegitimateCaller(t *testing.T) {
-	// 1. A MACHINE. Every client_credentials token IAM has ever minted carries
-	// `name: app.Name` AND a signed billing_account, so it is doubly clear of the
-	// refusal — the claim answers before the fallback is reached, and the name is
-	// non-empty if it ever is. Both spellings of the legacy type still pool.
+	// 1. A MACHINE, as it is actually minted. Every client_credentials token IAM
+	// issues carries a signed billing_account, and the API-key door states the same
+	// claim (iam compat keyUser.BillingAccount) — so the claim answers before the
+	// fallback is ever reached, and a first-party service credential keeps its org
+	// pool. That door does not transmit User.Type at all, which is why removing the
+	// asserted class from Credential cannot touch this population.
 	for _, m := range []Credential{
-		{Owner: SignupOrg, Name: "hanzo-cloud", Account: "org:hanzo"}, // as minted today
-		{Owner: SignupOrg, Name: "hanzo-cloud", Machine: true},        // pre-claim token
-		{Owner: SignupOrg, Name: "", Machine: true},                   // pre-claim, no name
-		{Owner: SignupOrg, Name: "hanzo-insights", Machine: IsMachine("service-account")},
+		{Owner: SignupOrg, Name: "hanzo-cloud", Account: "org:hanzo"},
+		{Owner: SignupOrg, Name: "hanzo-insights", Account: "org:hanzo"},
+		{Owner: SignupOrg, Name: "", Account: "org:hanzo"}, // nameless, but signed
 	} {
 		if got := Payer(m).Subject(); got != SignupOrg {
 			t.Fatalf("machine %+v resolved to %q, want the org pool %q", m, got, SignupOrg)
