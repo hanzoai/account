@@ -554,7 +554,7 @@ func TestEffectiveOrg_IsPure(t *testing.T) {
 	if firstErr != nil {
 		t.Fatalf("a granted org was refused: %v", firstErr)
 	}
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		if got, _ := EffectiveOrg("hanzo", orgs, "acme"); got != first {
 			t.Fatalf("call %d returned %q, first returned %q — not a function of its arguments", i, got, first)
 		}

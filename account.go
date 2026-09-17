@@ -332,11 +332,11 @@ func Payer(c Credential) Account {
 // is empty it is taken from the key's prefix. It is a parse, not a second rule:
 // it funnels into Payer, so it can never answer differently.
 func PayerOf(org, key string) Account {
-	if i := strings.IndexByte(key, '/'); i >= 0 {
+	if before, after, ok := strings.Cut(key, "/"); ok {
 		if strings.TrimSpace(org) == "" {
-			org = key[:i]
+			org = before
 		}
-		return Payer(Credential{Owner: org, Name: key[i+1:]})
+		return Payer(Credential{Owner: org, Name: after})
 	}
 	if strings.TrimSpace(org) == "" {
 		// A bare key with no org to qualify it NAMES AN ORG — there is no person in
